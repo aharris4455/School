@@ -1,6 +1,5 @@
 %Aukusti Harris
-%50268834
-%aukusti.harris@tuni.fi
+
 %PARAMETERS
 R_s = 40e6;  %Symbol rate, 40 MHz
 T_s = 1/R_s; %Symbol duration
