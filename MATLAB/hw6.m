@@ -1,91 +1,96 @@
 %HW6
-%TODO:
-%AWGN *
-%QPSK *
-%100 samp/sym * 
-%RRC Puslse shaping * 
-%Timing offset = +- half symbol interval *
-%Phase offset = +- 90 deg * 
-%RX matched filtering
-%Calculate DA (data-aided) loglikelyhood 
+%Aukusti Harris 
+clear all;
+Mqam = 4;        % Modulation order (QPSK)
+nSymb = 100;     % Number of symbols per estimation block
+osf = 100;       % Oversampling factor
+roff = 0.5;      % Roll-off of RRC filter
+span = 8;        % Span of the RRC filter (in symbols)
+nRRC = osf * span; % RRC filter order
+SNR_dB = [0 10 20]; % SNR values in dB
+numIterations = 1; % Number of iterations
 
-Mqam = 4; % Modulation order
-nSymb = 100; % Number of symbols per estimation block
-osf = 100; % Oversampling factor
-roff = 0.5; % Roll-off of RRC filter
-span = 8; % Span of the RRC filter (in symbols)
-nRRC = osf*span; % RRC filter order
-%toff 0->10
-toff = 10; % Timing offset in samples, -osf/2 < toff < osf/2
-% Fractional timing offset = toff/osf
-poff = 30; %Phase offset, degrees
-% RRC filter:
-hRRC = sqrt(osf)*rcosdesign(roff, span, osf);
-% Input data % upsampling/interpolation:
-in = randi(Mqam,1,nSymb)-1;
-in = qammod(in,Mqam); % QAM symbols
-upsamp = [zeros(1,toff+osf/2),1,zeros(1,osf/2-toff-1)]; % Notice the osf/2
-% extra zeroes in the beginning. This is done to allow for
-% negative time offsets. Take this into account when interpreting the
-% estimated delay!
-inOS = kron(in,upsamp);
-t = conv(hRRC,inOS); % This is the generated TX signal
-% Note: After RRC filtering in RX, the received signal contains
-% impulse response tails of nRRC samples on both sides. Remove these
-% before doing any other RX processing.
-n = (1/sqrt(2))*(rand(size(t))+1j*rand(size(t))); %Complex AWGN
-t_n = t + n; %Noisy signal
+% Arrays to store errors
+timingErrors = zeros(1, numIterations);
+phaseErrors = zeros(1, numIterations);
 
-%Matched RX Filter 
-rx_ft = hRRC;
-rx = filter(rx_ft,1,t_n); %RX Filtering
-rx = rx(1+(length(rx_ft)-1)/2:end); %Delay correction
-%%
 
-%% 
-%ChatGPT spaghetti code: 
-tauRange = -osf/2:1:osf/2;
-phiRange = -90:1:90; % Phase offset range in degrees
-L = zeros(length(tauRange), length(phiRange)); % Initialize log-likelihood matrix
+for iter = 1:numIterations
+    % Random timing and phase offsets for each iteration
+    toff = randi([-osf/2, osf/2]); % Random timing offset
+    poff = randi([-90, 90]);       % Random phase offset, in degrees
+    disp(['Timing offset: ', num2str(toff)]);
+    disp(['Phase offset: ', num2str(poff)]);
+    % Root Raised Cosine (RRC) filter
+    hRRC = sqrt(osf) * rcosdesign(roff, span, osf);
+    in = randi(Mqam, 1, nSymb) - 1;
+    in = qammod(in, Mqam); % Generate QPSK symbols
+    upsamp = [zeros(1, toff + osf/2), 1, zeros(1, osf/2 - toff - 1)]; % Time offset padding
+    inOS = kron(in, upsamp); % Oversample input symbols
+    t = conv(hRRC, inOS);    % Transmitted signal after RRC filtering
 
-% Define transmitted symbols (data-aided, assuming perfect knowledge of transmitted symbols)
-txSymbols = in;
+    % Add phase offset to the transmitted signal
+    t = t * exp(1j * deg2rad(poff));
 
-% Trim RX signal to account for RRC tails
-rxTrim = rx(nRRC:end-nRRC); % Remove RRC filter tails
+    % Add AWGN for a given SNR level
+    signal_power = mean(abs(t).^2); %Signal power in time domain
+    noise_power = signal_power/(osf*10^(SNR_dB(3)/10));
+    %noise_power = 10^(-SNR_dB(3) / 10); 
+    noise = sqrt(noise_power / 2) * (randn(size(t)) + 1j * randn(size(t)));
+    t_n = t + noise; % Signal with added noise
 
-% Loop over possible timing and phase offsets
-for i = 1:length(tauRange)
-    tau = tauRange(i); % Current timing offset in samples
+    % Matched RX Filter
+    rx_ft = hRRC;
+    rx = filter(rx_ft, 1, t_n);   % RX Filtering (Matched filter output)
+    rx = rx(1 + (length(rx_ft) - 1):end); % Delay correction
+    %rx = downsample(rx, osf);     % Downsample received signal
+    N_est_sym = length(rx);       % Number of estimated symbols
 
-    % Apply fractional delay (interpolation for timing offset)
-    rxInterp = resample(rxTrim, 1, osf, tau);
+    % Timing and phase offsets for log-likelihood calculation
+    timingOffsets = linspace(-osf/2, osf/2, 200); % In symbols
+    phaseOffsets = linspace(-pi/2, pi/2, 200);    % In radians
+    L = zeros(length(timingOffsets), length(phaseOffsets));
+    tau = max(sum(conj(in(1:nSymb)) .* rx(1:nSymb)));
+    theta = imag(tau);
+    disp(['Tau: ', num2str(tau)]);
+    disp(['Theta: ', num2str(theta)]);
+    % Calculate DA log-likelihood for different offsets
+    % for k = 1:length(timingOffsets)
+    %     for m = 1:length(phaseOffsets)
+    %         timingOffset = timingOffsets(k);
+    %         phaseOffset = phaseOffsets(m);
+    %         phaseTerm = exp(-1j * phaseOffset);
+    %         ll = real(phaseTerm * sum(conj(in(1:100)) .* rx(1:100)));
+    %         L(k, m) = ll;
+    %     end
+    % end
+    
+    % Find estimated offsets that maximize the log-likelihood
+    [~, maxIdx] = max(L(:));
+    [maxRow, maxCol] = ind2sub(size(L), maxIdx);
+    estimatedTimingOffset = timingOffsets(maxCol);
+    estimatedPhaseOffset = phaseOffsets(maxCol);
+    disp(['Estimated Timing Offset: ', num2str(estimatedTimingOffset)]);
+    disp(['Estimated Phase Offset: ', num2str(rad2deg(estimatedPhaseOffset)), ' degrees']);
+    % Calculate errors
+    timingEstError = abs(estimatedTimingOffset - toff);
+    phaseEstError = abs(estimatedPhaseOffset - deg2rad(poff));
 
-    for j = 1:length(phiRange)
-        phi = deg2rad(phiRange(j)); % Current phase offset in radians
-
-        % Compensate for phase offset
-        rxCorrected = rxInterp .* exp(-1j * phi);
-
-        % Calculate log-likelihood
-        L(i, j) = real(sum(conj(rxCorrected) * txSymbols));
-    end
+    % Store errors for plotting
+    timingErrors(iter) = timingEstError;
+    phaseErrors(iter) = phaseEstError;
 end
 
-% Find maximum log-likelihood and corresponding offsets
-[maxL, idx] = max(L(:));
-[iMax, jMax] = ind2sub(size(L), idx);
-estimatedTau = tauRange(iMax);
-estimatedPhi = phiRange(jMax);
-
-% Display estimated offsets
-fprintf('Estimated Timing Offset: %.2f samples\n', estimatedTau);
-fprintf('Estimated Phase Offset: %.2f degrees\n', estimatedPhi);
-
-% Plot Log-Likelihood Function
-figure;
-imagesc(phiRange, tauRange, L);
-colorbar;
-xlabel('Phase Offset (degrees)');
-ylabel('Timing Offset (samples)');
-title('DA Log-Likelihood Function');
+% % Plot timing and phase errors
+% figure;
+% subplot(2,1,1);
+% plot(1:numIterations, timingErrors, 'b');
+% xlabel('Iteration');
+% ylabel('Timing Error');
+% title('Timing Estimation Error Over 100 Iterations');
+% 
+% subplot(2,1,2);
+% plot(1:numIterations, rad2deg(phaseErrors), 'r');
+% xlabel('Iteration');
+% ylabel('Phase Error (degrees)');
+% title('Phase Estimation Error Over 100 Iterations');
